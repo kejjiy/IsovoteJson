@@ -1,8 +1,12 @@
 streamlit
-os
-json
-math
-streamlit
-plotly
 pyvis
+networkx
+matplotlib
+pandas
+numpy
+jinja2
+scipy
+beautifulsoup4
+lxml
+plotly
 streamlit.components.v1
