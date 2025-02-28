@@ -6,7 +6,6 @@ import plotly.graph_objects as go
 import networkx as nx
 from pyvis.network import Network
 import streamlit.components.v1 as components
-
 import aggregator  # votre script aggregator.py (pour la Vue globale)
 
 ###################################
