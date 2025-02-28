@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 import networkx as nx
 from pyvis.network import Network
 import streamlit.components.v1 as components
+
 import aggregator  # votre script aggregator.py (pour la Vue globale)
 
 ###################################
@@ -126,7 +127,6 @@ def plot_decision_timeline_interactive(timeline_points, decision_id):
         hover_text = f"Speaker: {speaker}<br>Words: {wc}<br>{snippet}"
         hover_texts.append(hover_text)
 
-    import plotly.graph_objects as go
     fig = go.Figure(
         data=go.Scatter(
             x=x_vals,
@@ -169,7 +169,7 @@ def plot_speaker_transition_interactive(transitions_dict, all_speakers, decision
             G.add_edge(a, b, weight=val)
 
     net = Network(height="600px", width="100%", directed=True)
-    net.force_atlas_2based()  # ou net.force_atlas_2based(), selon vos préférences
+    net.force_atlas_2based()
 
     for node in G.nodes:
         net.add_node(node, label=node)
@@ -218,7 +218,6 @@ MODULE_DISPLAYERS = {
     "global_stats": display_global_stats,
     "questions": display_questions,
     "decisions": display_decisions,
-    # "decision_graphs": display_decision_graphs # version statique
     "decision_graphs": display_decision_graphs_interactive  # version interactive
 }
 
@@ -232,6 +231,7 @@ def main():
 
     mode = st.sidebar.radio("Mode d'affichage", ["Vue par fichier", "Vue globale"])
 
+    # ---- Vue globale => aggregator ----
     if mode == "Vue globale":
         st.header("Statistiques globales agrégées")
         all_data = aggregator.load_extracted_data(json_file_path)
@@ -242,13 +242,39 @@ def main():
         st.subheader("Récap global :")
         st.write(f"- **Nombre total de fichiers** : {agg['total_files']}")
         st.write(f"- **Nombre total de décisions** : {agg['total_decisions']}")
-        st.subheader("Rapporteurs (agrégé)")
+        st.write(f"- **Nombre total de decision_graphs** : {agg['total_decision_graphs']}")
+        st.write(f"- **Nombre total de votes** : {agg['vote_count']}")
+
+        st.subheader("Présence Absence")
+        st.write(f"Fichiers all_present: {agg['files_all_present_count']}")
+        st.write(f"Fichiers not_all_present: {agg['files_not_all_present_count']}")
+        st.write("Absent-lists (extrait) :", agg["absent_lists"][:10])
+
+        st.subheader("Lois citées (extrait)")
+        st.write(agg["all_law_citations"][:10])
+
+        st.subheader("Global stats (paragraphs/words)")
+        st.write(f"- sum_total_paragraphs = {agg['sum_total_paragraphs']}")
+        st.write(f"- sum_total_words = {agg['sum_total_words']}")
+        st.subheader("Speakers global (extrait)")
+        sp_items = list(agg["speakers_global_counter"].items())[:10]
+        st.json(dict(sp_items))
+
+        st.subheader("Rapporteurs (cumulés)")
         st.json(agg["rapporteurs_count"])
-        st.subheader("Présidents (agrégé)")
+
+        st.subheader("Présidents (cumulés)")
         st.json(agg["presidents_count"])
+
+        st.subheader("Transitions (extrait)")
+        trans_items = list(agg["transition_counter"].items())[:10]
+        st.json(dict(trans_items))
+
+        st.subheader("Votes")
+        st.json(agg["vote_result_counter"])
         return
 
-    # Sinon: vue par fichier
+    # ---- Vue par fichier ----
     if not os.path.exists(json_file_path):
         st.error(f"Fichier JSON introuvable : {json_file_path}")
         return
@@ -274,15 +300,15 @@ def main():
     st.subheader(f"Contenu pour '{selected_file}' :")
 
     # On parcourt les clés => on appelle un display_func si on en a un
-    for key, module_data in data_item.items():
+    for key, mod_data in data_item.items():
         if key in ("file", "error"):
             continue
         display_func = MODULE_DISPLAYERS.get(key, None)
         if display_func:
-            display_func(module_data)
+            display_func(mod_data)
         else:
             st.header(f"{key} (module inconnu)")
-            st.json(module_data)
+            st.json(mod_data)
 
 if __name__ == "__main__":
     main()
