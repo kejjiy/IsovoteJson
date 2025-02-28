@@ -1,3 +1,5 @@
+# JsonInterfacer.py
+
 import os
 import json
 import math
@@ -6,12 +8,172 @@ import plotly.graph_objects as go
 import networkx as nx
 from pyvis.network import Network
 import streamlit.components.v1 as components
+from collections import Counter, defaultdict
 
-import aggregator  # votre script aggregator.py (pour la Vue globale)
+################################################
+# 1) Agrégation (ancien aggregator.py) intégré
+################################################
 
-###################################
-# 1) Fonctions d'affichage (modules + graphes)
-###################################
+def load_extracted_data(json_file_path):
+    """
+    Charge la liste de documents (all_data) depuis un fichier JSON.
+    Renvoie une liste de dicts (ou [] si problème).
+    """
+    if not os.path.exists(json_file_path):
+        return []
+    try:
+        with open(json_file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            return []
+        return data
+    except:
+        return []
+
+def aggregate_all_data(all_data):
+    """
+    Parcourt la liste 'all_data' (un dict par fichier).
+    Calcule des statistiques globales sur :
+      - presence_absence
+      - advanced_law_citations
+      - global_stats
+      - decisions
+      - decision_graphs
+      - votes
+
+    De plus, on crée un "global_decision_graph" fusionnant tous
+    les timeline_points & transitions, pour un graphe global.
+    """
+
+    aggregated = {
+        "total_files": len(all_data),
+
+        # presence_absence
+        "files_all_present_count": 0,
+        "files_not_all_present_count": 0,
+        "absent_lists": [],
+
+        # advanced_law_citations
+        "all_law_citations": set(),
+
+        # global_stats
+        "sum_total_paragraphs": 0,
+        "sum_total_words": 0,
+        "speakers_global_counter": Counter(),
+
+        # decisions
+        "total_decisions": 0,
+        "rapporteurs_count": Counter(),
+        "presidents_count": Counter(),
+
+        # decision_graphs
+        "total_decision_graphs": 0,
+        "sum_timeline_points": 0,
+        "transition_counter": Counter(),
+
+        # votes
+        "vote_count": 0,
+        "vote_result_counter": Counter(),
+
+        # Le graphe global unique
+        "global_decision_graph": {
+            "timeline_points": [],
+            "transitions": {},
+            "all_speakers": set()
+        }
+    }
+
+    global_index = 0  # pour donner un index unique aux timeline_points
+
+    for item in all_data:
+        # presence_absence
+        pa = item.get("presence_absence")
+        if pa:
+            if pa.get("all_present", False):
+                aggregated["files_all_present_count"] += 1
+            else:
+                aggregated["files_not_all_present_count"] += 1
+            absent_list = pa.get("absent_list", [])
+            for ab in absent_list:
+                aggregated["absent_lists"].append(ab)
+
+        # advanced_law_citations
+        alc = item.get("advanced_law_citations", [])
+        for law_cit in alc:
+            aggregated["all_law_citations"].add(law_cit)
+
+        # global_stats
+        gs = item.get("global_stats")
+        if gs:
+            aggregated["sum_total_paragraphs"] += gs.get("total_paragraphs", 0)
+            aggregated["sum_total_words"] += gs.get("total_words", 0)
+            sp_count = gs.get("speakers_global_count", {})
+            for spk, val in sp_count.items():
+                aggregated["speakers_global_counter"][spk] += val
+
+        # decisions
+        decs = item.get("decisions", [])
+        aggregated["total_decisions"] += len(decs)
+        for dec in decs:
+            rap = dec.get("rapporteur")
+            if rap:
+                aggregated["rapporteurs_count"][rap] += 1
+            pres = dec.get("president")
+            if pres:
+                aggregated["presidents_count"][pres] += 1
+
+        # decision_graphs
+        dgraphs = item.get("decision_graphs", [])
+        aggregated["total_decision_graphs"] += len(dgraphs)
+
+        for dg in dgraphs:
+            tpoints = dg.get("timeline_points", [])
+            aggregated["sum_timeline_points"] += len(tpoints)
+            transitions = dg.get("transitions", {})
+
+            # fusion dans global_decision_graph
+            for tp in tpoints:
+                new_tp = {
+                    "index": global_index,
+                    "speaker": tp.get("speaker", "#unknown"),
+                    "wordcount": tp.get("wordcount", 0),
+                    "paragraph_snippet": tp.get("paragraph_snippet", "")
+                }
+                aggregated["global_decision_graph"]["timeline_points"].append(new_tp)
+                spk = new_tp["speaker"]
+                aggregated["global_decision_graph"]["all_speakers"].add(spk)
+
+                global_index += 1
+
+            for tkey, tval in transitions.items():
+                aggregated["transition_counter"][tkey] += tval
+
+        # votes
+        votes_list = item.get("votes", [])
+        aggregated["vote_count"] += len(votes_list)
+        for vt in votes_list:
+            analysis = vt.get("analysis", {})
+            res = analysis.get("result", "inconnu")
+            aggregated["vote_result_counter"][res] += 1
+
+    # convert counters/sets en structures JSON-compatibles
+    aggregated["all_law_citations"] = sorted(list(aggregated["all_law_citations"]))
+    aggregated["speakers_global_counter"] = dict(aggregated["speakers_global_counter"])
+    aggregated["rapporteurs_count"] = dict(aggregated["rapporteurs_count"])
+    aggregated["presidents_count"] = dict(aggregated["presidents_count"])
+    aggregated["transition_counter"] = dict(aggregated["transition_counter"])
+    aggregated["vote_result_counter"] = dict(aggregated["vote_result_counter"])
+
+    # remplir global_decision_graph transitions + all_speakers
+    aggregated["global_decision_graph"]["transitions"] = dict(aggregated["transition_counter"])
+    aggregated["global_decision_graph"]["all_speakers"] = list(aggregated["global_decision_graph"]["all_speakers"])
+
+    return aggregated
+
+
+################################################
+# 2) Fonctions d'affichage de modules
+################################################
 
 def display_presence_absence(module_data):
     st.header("Présence / Absence")
@@ -33,7 +195,7 @@ def display_votes(module_data):
             st.write("**Analyse :**", analysis)
 
 def display_global_stats(module_data):
-    st.header("Statistiques globales")
+    st.header("Statistiques globales (par fichier)")
     total_paragraphs = module_data.get("total_paragraphs", 0)
     total_words = module_data.get("total_words", 0)
     st.write(f"- **Nombre total de paragraphes** : {total_paragraphs}")
@@ -41,7 +203,7 @@ def display_global_stats(module_data):
 
     global_chrono = module_data.get("global_chronology", [])
     if global_chrono:
-        with st.expander("Voir la chronologie globale"):
+        with st.expander("Voir la chronologie globale (FICHIER)"):
             for c in global_chrono:
                 paragraph_index = c.get("paragraph_index")
                 paragraph_text = c.get("paragraph_text", "")
@@ -96,16 +258,11 @@ def display_decisions(module_data):
             st.write("**Moyenne de mots par prise de parole :**")
             st.json(wps)
 
-###################################
-# 2) Fonctions pour "decision_graphs" interactives
-###################################
+################################################
+# 3) Graphes interactifs (Plotly + PyVis)
+################################################
+
 def plot_decision_timeline_interactive(timeline_points, decision_id):
-    """
-    Graphe Plotly : 
-    X = index local, Y = wordcount
-    Taille du point ~ sqrt(wordcount)
-    Info-bulle => speaker + snippet
-    """
     if not timeline_points:
         st.write(f"Pas de timeline_points pour la décision {decision_id}.")
         return
@@ -124,8 +281,7 @@ def plot_decision_timeline_interactive(timeline_points, decision_id):
         y_vals.append(wc)
         size = max(5, math.sqrt(wc)*10) if wc>0 else 5
         sizes.append(size)
-        hover_text = f"Speaker: {speaker}<br>Words: {wc}<br>{snippet}"
-        hover_texts.append(hover_text)
+        hover_texts.append(f"Speaker: {speaker}<br>Words: {wc}<br>{snippet}")
 
     fig = go.Figure(
         data=go.Scatter(
@@ -143,24 +299,26 @@ def plot_decision_timeline_interactive(timeline_points, decision_id):
         )
     )
     fig.update_layout(
-        title=f"Timeline Interactif - Décision {decision_id}",
+        title=f"Timeline Interactif - {decision_id}",
         xaxis_title="Index prise de parole",
-        yaxis_title="Nombre de mots",
+        yaxis_title="Nb de mots",
         height=500
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-
 def plot_speaker_transition_interactive(transitions_dict, all_speakers, decision_id):
+    """
+    Crée un graphe interactif via PyVis pour les transitions entre interlocuteurs.
+    Les nœuds sont affichés avec une taille légèrement agrandie et des labels en police plus grande.
+    """
     if not transitions_dict or not all_speakers:
-        st.write(f"Aucune transition pour la décision {decision_id}.")
+        st.write(f"Aucune transition pour {decision_id}.")
         return
 
     G = nx.DiGraph()
     for sp in all_speakers:
         G.add_node(sp)
-
     for key, val in transitions_dict.items():
         raw = key.strip("()")
         parts = raw.split(",")
@@ -169,28 +327,25 @@ def plot_speaker_transition_interactive(transitions_dict, all_speakers, decision
             G.add_edge(a, b, weight=val)
 
     net = Network(height="600px", width="100%", directed=True)
-    net.force_atlas_2based()
+    # Ajuster le layout pour améliorer l'espacement
+    net.barnes_hut(gravity=-20000, central_gravity=0.3, spring_length=250, spring_strength=0.001, damping=0.95)
 
-    for node in G.nodes:
-        net.add_node(node, label=node)
-
+    # Ajouter les nœuds avec taille légèrement agrandie et police en plus grand
+    for node in G.nodes():
+        net.add_node(node, label=node, size=35, font={"size": 16})
+    
+    # Ajouter les arêtes en ajustant leur épaisseur
     for (u, v) in G.edges():
         w = G[u][v]['weight']
-        width = 1 + 0.5 * w
+        width = 1 + 0.5 * w  # ajustement du coefficient si besoin
         net.add_edge(u, v, value=w, width=width)
 
-    # ✔ On génère directement la chaîne HTML:
+    # Générer le HTML directement en mémoire
     html_contents = net.generate_html()
-    # ✔ Puis on l'affiche dans Streamlit
-    st.subheader(f"Graphe transitions (Décision {decision_id})")
-    components.html(html_contents, height=650, scrolling=True)
-
+    st.subheader(f"Graphe transitions {decision_id}")
+    st.components.v1.html(html_contents, height=650, scrolling=True)
 
 def display_decision_graphs_interactive(module_data):
-    """
-    On affiche data["decision_graphs"], 
-    propose d'afficher timeline & transitions en mode interactif.
-    """
     st.header("Decision Graphs (Interactif)")
     if not module_data:
         st.write("Aucun 'decision_graphs' détecté.")
@@ -210,7 +365,7 @@ def display_decision_graphs_interactive(module_data):
                 plot_speaker_transition_interactive(transitions_dict, all_speakers, dec_id)
 
 ###################################
-# 3) Registre automatique des modules
+# 4) Dictionnaire de displayers
 ###################################
 MODULE_DISPLAYERS = {
     "presence_absence": display_presence_absence,
@@ -218,47 +373,53 @@ MODULE_DISPLAYERS = {
     "global_stats": display_global_stats,
     "questions": display_questions,
     "decisions": display_decisions,
-    "decision_graphs": display_decision_graphs_interactive  # version interactive
+    "decision_graphs": display_decision_graphs_interactive
 }
 
 ###################################
-# 4) Script Streamlit principal
+# 5) Main Streamlit
 ###################################
 def main():
-    st.title("Explorateur des données extraites (Modulaire) + Aggregation + Graphs Interactifs")
+    st.title("Explorateur : Fichiers / Global + Graph Interactif")
 
     json_file_path = "extracted_data_modular_all_modules.json"
 
     mode = st.sidebar.radio("Mode d'affichage", ["Vue par fichier", "Vue globale"])
 
-    # ---- Vue globale => aggregator ----
+    if not os.path.exists(json_file_path):
+        st.error(f"Fichier JSON introuvable : {json_file_path}")
+        return
+
+    all_data = load_extracted_data(json_file_path)
+    if not all_data:
+        st.warning("Le JSON est vide ou invalide.")
+        return
+
+    # Agrégation
+    agg = aggregate_all_data(all_data)
+
     if mode == "Vue globale":
-        st.header("Statistiques globales agrégées")
-        all_data = aggregator.load_extracted_data(json_file_path)
-        if not all_data:
-            st.error("Impossible de charger le JSON ou données vides.")
-            return
-        agg = aggregator.aggregate_all_data(all_data)
-        st.subheader("Récap global :")
-        st.write(f"- **Nombre total de fichiers** : {agg['total_files']}")
-        st.write(f"- **Nombre total de décisions** : {agg['total_decisions']}")
-        st.write(f"- **Nombre total de decision_graphs** : {agg['total_decision_graphs']}")
-        st.write(f"- **Nombre total de votes** : {agg['vote_count']}")
+        st.header("Statistiques globales")
+        st.write(f"**Total Files** : {agg['total_files']}")
+        st.write(f"**Total Decisions** : {agg['total_decisions']}")
+        st.write(f"**Total Decision Graphs** : {agg['total_decision_graphs']}")
+        st.write(f"**Total Votes** : {agg['vote_count']}")
 
         st.subheader("Présence Absence")
-        st.write(f"Fichiers all_present: {agg['files_all_present_count']}")
-        st.write(f"Fichiers not_all_present: {agg['files_not_all_present_count']}")
-        st.write("Absent-lists (extrait) :", agg["absent_lists"][:10])
+        st.write(f"files_all_present_count = {agg['files_all_present_count']}")
+        st.write(f"files_not_all_present_count = {agg['files_not_all_present_count']}")
+        st.write("absent_lists (extrait) :", agg['absent_lists'][:10])
 
         st.subheader("Lois citées (extrait)")
         st.write(agg["all_law_citations"][:10])
 
-        st.subheader("Global stats (paragraphs/words)")
-        st.write(f"- sum_total_paragraphs = {agg['sum_total_paragraphs']}")
-        st.write(f"- sum_total_words = {agg['sum_total_words']}")
+        st.subheader("Global Stats (paragraphs/words)")
+        st.write(f"sum_total_paragraphs = {agg['sum_total_paragraphs']}")
+        st.write(f"sum_total_words = {agg['sum_total_words']}")
+
         st.subheader("Speakers global (extrait)")
-        sp_items = list(agg["speakers_global_counter"].items())[:10]
-        st.json(dict(sp_items))
+        spc = list(agg["speakers_global_counter"].items())[:10]
+        st.json(dict(spc))
 
         st.subheader("Rapporteurs (cumulés)")
         st.json(agg["rapporteurs_count"])
@@ -270,21 +431,25 @@ def main():
         trans_items = list(agg["transition_counter"].items())[:10]
         st.json(dict(trans_items))
 
-        st.subheader("Votes")
+        st.subheader("Votes (résultats)")
         st.json(agg["vote_result_counter"])
+
+        # On affiche un graphe global
+        # => same logic, on a agg["global_decision_graph"]
+        gdg = agg["global_decision_graph"]
+        if st.checkbox("Afficher timeline global (Plotly)"):
+            tpoints = gdg["timeline_points"]
+            plot_decision_timeline_interactive(tpoints, "GLOBAL")
+
+        if st.checkbox("Afficher transitions global (PyVis)"):
+            transitions_dict = gdg["transitions"]
+            all_sp = gdg["all_speakers"]
+            plot_speaker_transition_interactive(transitions_dict, all_sp, "GLOBAL")
+
         return
 
-    # ---- Vue par fichier ----
-    if not os.path.exists(json_file_path):
-        st.error(f"Fichier JSON introuvable : {json_file_path}")
-        return
-
-    with open(json_file_path, "r", encoding='utf-8') as f:
-        all_data = json.load(f)
-
-    if not isinstance(all_data, list):
-        st.warning("Le JSON n'est pas une liste.")
-        return
+    # Sinon => Vue par fichier
+    st.header("Vue par fichier")
 
     file_names = [item["file"] for item in all_data if "file" in item]
     if not file_names:
@@ -298,8 +463,6 @@ def main():
         return
 
     st.subheader(f"Contenu pour '{selected_file}' :")
-
-    # On parcourt les clés => on appelle un display_func si on en a un
     for key, mod_data in data_item.items():
         if key in ("file", "error"):
             continue

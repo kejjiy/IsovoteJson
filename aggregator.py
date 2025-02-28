@@ -2,18 +2,12 @@
 
 import os
 import json
-import math
-import streamlit as st
 from collections import Counter, defaultdict
-
-###################################################
-# 1) Fonctions de base pour chargement & agrégation
-###################################################
 
 def load_extracted_data(json_file_path):
     """
     Charge la liste de documents (all_data) depuis un fichier JSON.
-    Renvoie une liste de dict (ou [] si problème).
+    Renvoie une liste de dicts (ou [] si problème).
     """
     if not os.path.exists(json_file_path):
         return []
@@ -28,36 +22,30 @@ def load_extracted_data(json_file_path):
 
 def aggregate_all_data(all_data):
     """
-    Parcourt la liste 'all_data' (chacun correspondant à un fichier).
-    Calcule des stats globales sur les différents modules :
+    Parcourt la liste 'all_data' (un dict par fichier).
+    Calcule des statistiques globales sur :
+      - presence_absence
+      - advanced_law_citations
+      - global_stats
+      - decisions
+      - decision_graphs
+      - votes
 
-      * presence_absence
-         - combien de fichiers all_present
-         - absent_list cumulée
+    De plus, on crée un "global_decision_graph" fusionnant tous les
+    'decision_graphs' en un seul :
+      aggregator["global_decision_graph"] = {
+        "timeline_points": [...],  # concat de tous
+        "transitions": {...},      # merge de tous
+        "all_speakers": [...],     # union de tous
+      }
 
-      * advanced_law_citations
-         - set de toutes les lois citées
+    Puis on renvoie un dict 'aggregated' avec tout.
 
-      * global_stats
-         - somme total_paragraphs
-         - somme total_words
-         - merge speakers_global_count
-
-      * decisions
-         - total_decisions
-         - rapporteurs_count
-         - presidents_count
-
-      * decision_graphs
-         - total_decision_graphs
-         - sum_timeline_points
-         - transition_counter
-
-      * votes
-         - nb total de votes
-         - vote_result_counter (adopté, rejeté, inconnu, etc.)
-
-    Renvoie un dict 'aggregated' rassemblant tout ça.
+    Exemple d'accès :
+      aggregated["global_decision_graph"]["timeline_points"]
+      aggregated["global_decision_graph"]["transitions"]
+      aggregated["global_decision_graph"]["all_speakers"]
+    pour tracer un unique graphe global dans Streamlit.
     """
 
     aggregated = {
@@ -88,8 +76,18 @@ def aggregate_all_data(all_data):
 
         # votes
         "vote_count": 0,
-        "vote_result_counter": Counter()
+        "vote_result_counter": Counter(),
+
+        # Le graphe global unique
+        "global_decision_graph": {
+            "timeline_points": [],
+            "transitions": {},
+            "all_speakers": set()
+        }
     }
+
+    # On garde un "global_index" si on veut un index unique pour la timeline
+    global_index = 0
 
     for item in all_data:
         # presence_absence
@@ -131,10 +129,30 @@ def aggregate_all_data(all_data):
         # decision_graphs
         dgraphs = item.get("decision_graphs", [])
         aggregated["total_decision_graphs"] += len(dgraphs)
+
         for dg in dgraphs:
             tpoints = dg.get("timeline_points", [])
             aggregated["sum_timeline_points"] += len(tpoints)
             transitions = dg.get("transitions", {})
+
+            # On fusionne tout dans le "global_decision_graph"
+            for tp in tpoints:
+                # On prend la structure, mais on modifie "index" => on utilise global_index
+                new_tp = {
+                    "index": global_index,
+                    "speaker": tp.get("speaker", "#unknown"),
+                    "wordcount": tp.get("wordcount", 0),
+                    "paragraph_snippet": tp.get("paragraph_snippet", "")
+                }
+                aggregated["global_decision_graph"]["timeline_points"].append(new_tp)
+                # On incrémente
+                global_index += 1
+
+                # On enregistre le speaker dans all_speakers
+                spk = new_tp["speaker"]
+                aggregated["global_decision_graph"]["all_speakers"].add(spk)
+
+            # transitions
             for tkey, tval in transitions.items():
                 aggregated["transition_counter"][tkey] += tval
 
@@ -154,81 +172,44 @@ def aggregate_all_data(all_data):
     aggregated["transition_counter"] = dict(aggregated["transition_counter"])
     aggregated["vote_result_counter"] = dict(aggregated["vote_result_counter"])
 
+    # On finit par remplir aggregator["global_decision_graph"]["transitions"]
+    # en prenant aggregated["transition_counter"]
+    aggregated["global_decision_graph"]["transitions"] = dict(aggregated["transition_counter"])
+    # On convertit set -> list
+    all_speakers_set = aggregated["global_decision_graph"]["all_speakers"]
+    aggregated["global_decision_graph"]["all_speakers"] = list(all_speakers_set)
+
     return aggregated
 
-
-###################################################
-# 2) Interface Streamlit pour afficher l'agrégat
-###################################################
-
-def display_aggregated_stats(aggregated):
-    """
-    Affichage Streamlit de l'agrégat, 
-    pour visualiser les statistiques globales en mode interactif.
-    """
-    st.title("Statistiques globales (Agrégées)")
-    st.write(f"**Nombre total de fichiers** : {aggregated['total_files']}")
-    st.write(f"**Fichiers all_present** : {aggregated['files_all_present_count']}")
-    st.write(f"**Fichiers not_all_present** : {aggregated['files_not_all_present_count']}")
-
-    st.write(f"**Nombre total de décisions** : {aggregated['total_decisions']}")
-    st.write(f"**Nombre total de decision_graphs** : {aggregated['total_decision_graphs']}")
-
-    st.write(f"**Nombre total de votes** : {aggregated['vote_count']}")
-
-    st.subheader("Votes : results")
-    st.json(aggregated["vote_result_counter"])
-
-    st.subheader("Rapporteurs (cumulés)")
-    st.json(aggregated["rapporteurs_count"])
-
-    st.subheader("Présidents (cumulés)")
-    st.json(aggregated["presidents_count"])
-
-    st.subheader("Absent-lists (extrait)")
-    st.write(aggregated["absent_lists"][:10])  # on limite l'affichage
-
-    st.subheader("Lois citées (extrait)")
-    st.write(aggregated["all_law_citations"][:10])
-
-    st.subheader("Global stats paragraphs/words")
-    st.write(f"- **Sum paragraphs** : {aggregated['sum_total_paragraphs']}")
-    st.write(f"- **Sum words** : {aggregated['sum_total_words']}")
-
-    st.subheader("Speakers global counter (extrait)")
-    # on limite l'affichage
-    items_list = list(aggregated["speakers_global_counter"].items())[:10]
-    st.json(dict(items_list))
-
-    st.subheader("Transitions ex (extrait)")
-    trans_items = list(aggregated["transition_counter"].items())[:10]
-    st.json(dict(trans_items))
-
-
-###################################################
-# 3) Point d'entrée Streamlit
-###################################################
 def main():
-    st.write("## Agrégateur de données - Extrait JSON")
+    """
+    Exemple d'utilisation : on lit le JSON, on agrège, on affiche en console.
+    """
     json_file_path = "extracted_data_modular_all_modules.json"
-
     if not os.path.exists(json_file_path):
-        st.error(f"Fichier introuvable : {json_file_path}")
+        print("Fichier introuvable.")
         return
+    with open(json_file_path, "r", encoding="utf-8") as f:
+        all_data = json.load(f)
 
-    # Charger
-    all_data = load_extracted_data(json_file_path)
-    if not all_data:
-        st.warning("Le JSON est vide ou invalide.")
+    if not isinstance(all_data, list):
+        print("Le JSON n'est pas une liste.")
         return
 
     aggregated = aggregate_all_data(all_data)
+    print("=== Statistiques globales ===")
+    print(f"Fichiers total : {aggregated['total_files']}")
+    print(f"Decisions total : {aggregated['total_decisions']}")
+    print(f"Decision_graphs total : {aggregated['total_decision_graphs']}")
+    print("Lois citées (extrait) :", aggregated["all_law_citations"][:5])
+    print("Vote_result_counter :", aggregated["vote_result_counter"])
 
-    # Affichage
-    display_aggregated_stats(aggregated)
+    # On peut aussi afficher aggregator["global_decision_graph"]
+    # ex:
+    ggraph = aggregated["global_decision_graph"]
+    print(f"Global timeline_points: {len(ggraph['timeline_points'])}")
+    print(f"Global transitions: {len(ggraph['transitions'])}")
+    print(f"Global all_speakers: {len(ggraph['all_speakers'])}")
 
 if __name__ == "__main__":
-    # Si on exécute en tant que script: 
-    #   streamlit run aggregator.py
-    # On lance la fonction main
     main()
