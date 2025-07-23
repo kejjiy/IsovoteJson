@@ -303,7 +303,7 @@ def plot_decision_timeline_interactive(
             return "purple"
         if has_vote:
             return "green"
-        return "blue"
+        return "lightblue"
 
     # 4) Remplir
     for i, pt in enumerate(merged_points):
